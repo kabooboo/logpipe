@@ -1,4 +1,4 @@
-module github.com/YOUR_USERNAME/logpipe
+module github.com/kabooboo/logpipe
 
 go 1.21
 
