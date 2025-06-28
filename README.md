@@ -52,6 +52,27 @@ echo '{"@timestamp":"2025-06-28T11:50:00.000Z","log.level":"info","message":"App
 cat app.log | logpipe
 ```
 
+### Filtering Logs
+
+```bash
+# Filter by log level (include only)
+cat app.log | logpipe --level "error|warn"
+
+# Filter by message content (include only)
+cat app.log | logpipe --message "database.*timeout"
+
+# Exclude log levels
+cat app.log | logpipe --no-level "info"
+
+# Exclude message patterns
+cat app.log | logpipe --no-message "debug.*"
+
+# Combine filters
+cat app.log | logpipe --level "error|warn" --no-message "deprecated"
+```
+
+**Note**: All regex patterns are automatically anchored (^ and $ are implicit).
+
 ### Kubernetes Logs
 
 ```bash

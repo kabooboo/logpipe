@@ -3,8 +3,10 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -90,9 +92,8 @@ type LogEntry struct {
 }
 
 func main() {
-	// Check for help flags
-	if len(os.Args) > 1 {
-		arg := os.Args[1]
+	// Check for help flags before parsing
+	for _, arg := range os.Args[1:] {
 		if arg == "-h" || arg == "--help" || arg == "help" {
 			printHelp()
 			return
@@ -100,6 +101,44 @@ func main() {
 		if arg == "-v" || arg == "--version" || arg == "version" {
 			printVersion()
 			return
+		}
+	}
+
+	var levelFilter = flag.String("level", "", "PERL regex to filter log levels")
+	var messageFilter = flag.String("message", "", "PERL regex to filter messages")
+	var noLevelFilter = flag.String("no-level", "", "PERL regex to exclude log levels")
+	var noMessageFilter = flag.String("no-message", "", "PERL regex to exclude messages")
+	flag.Parse()
+
+	// Compile regex patterns if provided
+	var levelRegex, messageRegex, noLevelRegex, noMessageRegex *regexp.Regexp
+	var err error
+	if *levelFilter != "" {
+		levelRegex, err = regexp.Compile(*levelFilter)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Invalid level regex: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	if *messageFilter != "" {
+		messageRegex, err = regexp.Compile(*messageFilter)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Invalid message regex: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	if *noLevelFilter != "" {
+		noLevelRegex, err = regexp.Compile(*noLevelFilter)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Invalid no-level regex: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	if *noMessageFilter != "" {
+		noMessageRegex, err = regexp.Compile(*noMessageFilter)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Invalid no-message regex: %v\n", err)
+			os.Exit(1)
 		}
 	}
 
@@ -129,6 +168,20 @@ func main() {
 			} else {
 				fmt.Println(line)
 			}
+			continue
+		}
+
+		// Apply filters
+		if levelRegex != nil && !levelRegex.MatchString("^"+logEntry.Level+"$") {
+			continue
+		}
+		if messageRegex != nil && !messageRegex.MatchString("^"+logEntry.Message+"$") {
+			continue
+		}
+		if noLevelRegex != nil && noLevelRegex.MatchString("^"+logEntry.Level+"$") {
+			continue
+		}
+		if noMessageRegex != nil && noMessageRegex.MatchString("^"+logEntry.Message+"$") {
 			continue
 		}
 
@@ -233,8 +286,12 @@ func printHelp() {
 	fmt.Println("  It automatically detects HTTP access logs and general application logs.")
 	fmt.Println()
 	fmt.Println("OPTIONS:")
-	fmt.Println("  -h, --help     Show this help message")
-	fmt.Println("  -v, --version  Show version information")
+	fmt.Println("  -h, --help              Show this help message")
+	fmt.Println("  -v, --version           Show version information")
+	fmt.Println("  --level REGEX           Include logs matching level regex")
+	fmt.Println("  --message REGEX         Include logs matching message regex")
+	fmt.Println("  --no-level REGEX        Exclude logs matching level regex")
+	fmt.Println("  --no-message REGEX      Exclude logs matching message regex")
 	fmt.Println()
 	fmt.Println("EXAMPLES:")
 	fmt.Println("  # Kubernetes logs")
@@ -245,6 +302,18 @@ func printHelp() {
 	fmt.Println()
 	fmt.Println("  # Live log streaming")
 	fmt.Println("  tail -f /var/log/app.log | logpipe")
+	fmt.Println()
+	fmt.Println("  # Filter by log level")
+	fmt.Println("  cat app.log | logpipe --level \"error|warn\"")
+	fmt.Println()
+	fmt.Println("  # Filter by message content")
+	fmt.Println("  cat app.log | logpipe --message \"database.*timeout\"")
+	fmt.Println()
+	fmt.Println("  # Exclude info logs")
+	fmt.Println("  cat app.log | logpipe --no-level \"info\"")
+	fmt.Println()
+	fmt.Println("  # Exclude debug messages")
+	fmt.Println("  cat app.log | logpipe --no-message \"debug.*\"")
 	fmt.Println()
 	fmt.Println("  # JSON log example")
 	fmt.Println(`  echo '{"@timestamp":"2024-01-15T14:25:13.458Z","log.level":"info","message":"Server started"}' | logpipe`)
