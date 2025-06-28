@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/fatih/color"
@@ -159,21 +160,25 @@ func printPrettyLog(log LogEntry) {
 	// Check if this is an HTTP access log
 	if log.Category == "http" && log.HTTP.Request.Method != "" {
 		// Format HTTP access log
+		userAgent := log.UserAgent.Original
+		if len(userAgent) > 50 {
+			userAgent = userAgent[:50]
+		}
 		fmt.Printf("%s [%s] %s %s %s %s %s %s\n",
-			timestampColor.Sprintf(timestamp.Format("15:04:05")),
-			levelColor.Sprintf("%-5s", log.Level),
+			timestampColor.Sprintf(timestamp.Format("15:04:05.000")),
+			levelColor.Sprintf("%-4s", log.Level[:min(4, len(log.Level))]),
 			methodColor.Sprintf("%-4s", log.HTTP.Request.Method),
 			statusColor.Sprintf("%d", log.HTTP.Response.StatusCode),
 			pathColor.Sprintf("%s", log.URL.Path),
-			color.New(color.FgWhite).Sprintf("from=%s", log.Source.IP),
-			durationColor.Sprintf("%dms", log.Event.Duration/1000), // Convert to milliseconds
-			color.New(color.FgBlue).Sprintf("ua=%s", log.UserAgent.Original),
+			durationColor.Sprintf("%dms", log.Event.Duration/1000000), // Convert to milliseconds
+			color.New(color.FgBlue).Sprintf("ua=%s", userAgent),
+			messageColor.Sprintf("%s", log.Message),
 		)
 	} else {
 		// Format general log entry
 		fmt.Printf("%s [%s] %s",
-			timestampColor.Sprintf(timestamp.Format("15:04:05")),
-			levelColor.Sprintf("%-5s", log.Level),
+			timestampColor.Sprintf(timestamp.Format("15:04:05.000")),
+			levelColor.Sprintf("%-4s", log.Level[:min(4, len(log.Level))]),
 			messageColor.Sprintf("%s", log.Message),
 		)
 
@@ -188,10 +193,10 @@ func printPrettyLog(log LogEntry) {
 }
 
 func getLevelColor(level string) *color.Color {
-	switch level {
+	switch strings.ToLower(strings.TrimSpace(level)) {
 	case "error":
 		return color.New(color.FgRed, color.Bold)
-	case "warn":
+	case "warn", "warning":
 		return color.New(color.FgYellow, color.Bold)
 	case "info":
 		return color.New(color.FgBlue)
