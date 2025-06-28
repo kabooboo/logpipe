@@ -1,0 +1,117 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.21'
+
+    - name: Get tag version
+      id: get_version
+      run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+    - name: Build binaries
+      run: |
+        # Build for multiple platforms
+        mkdir -p dist
+        
+        # Linux AMD64
+        GOOS=linux GOARCH=amd64 go build -o dist/logpipe-linux-amd64 main.go
+        
+        # Linux ARM64
+        GOOS=linux GOARCH=arm64 go build -o dist/logpipe-linux-arm64 main.go
+        
+        # macOS AMD64
+        GOOS=darwin GOARCH=amd64 go build -o dist/logpipe-darwin-amd64 main.go
+        
+        # macOS ARM64 (Apple Silicon)
+        GOOS=darwin GOARCH=arm64 go build -o dist/logpipe-darwin-arm64 main.go
+        
+        # Windows AMD64
+        GOOS=windows GOARCH=amd64 go build -o dist/logpipe-windows-amd64.exe main.go
+        
+        # Create checksums
+        cd dist
+        sha256sum * > checksums.txt
+
+    - name: Create Release
+      uses: actions/create-release@v1
+      id: create_release
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ steps.get_version.outputs.VERSION }}
+        release_name: LogPipe ${{ steps.get_version.outputs.VERSION }}
+        body: |
+          ## What's Changed
+          
+          See the full changelog and compare: https://github.com/${{ github.repository }}/compare/...
+          
+          ## Installation
+          
+          Download the appropriate binary for your platform:
+          
+          ### Linux
+          ```bash
+          # AMD64
+          curl -L -o logpipe https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.VERSION }}/logpipe-linux-amd64
+          chmod +x logpipe
+          
+          # ARM64
+          curl -L -o logpipe https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.VERSION }}/logpipe-linux-arm64
+          chmod +x logpipe
+          ```
+          
+          ### macOS
+          ```bash
+          # Intel Macs
+          curl -L -o logpipe https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.VERSION }}/logpipe-darwin-amd64
+          chmod +x logpipe
+          
+          # Apple Silicon Macs
+          curl -L -o logpipe https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.VERSION }}/logpipe-darwin-arm64
+          chmod +x logpipe
+          ```
+          
+          ### Windows
+          ```powershell
+          # Download logpipe-windows-amd64.exe and add to PATH
+          ```
+          
+          ## Usage
+          
+          ```bash
+          # Basic usage
+          kubectl logs my-pod | ./logpipe
+          
+          # With files
+          cat app.log | ./logpipe
+          ```
+        draft: false
+        prerelease: false
+
+    - name: Upload Release Assets
+      run: |
+        # Upload all binaries
+        for file in dist/*; do
+          if [ -f "$file" ]; then
+            echo "Uploading $file"
+            gh release upload ${{ steps.get_version.outputs.VERSION }} "$file"
+          fi
+        done
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
