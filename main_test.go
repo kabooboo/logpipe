@@ -285,6 +285,73 @@ func BenchmarkLogEntryUnmarshal(b *testing.B) {
 	}
 }
 
+func TestPrintHelp(t *testing.T) {
+	// Capture stdout
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	printHelp()
+
+	// Close writer and restore stdout
+	w.Close()
+	os.Stdout = oldStdout
+
+	// Read output
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	output := buf.String()
+
+	// Verify help content
+	expectedStrings := []string{
+		"LogPipe - Pretty-print structured JSON logs",
+		"USAGE:",
+		"logpipe [OPTIONS]",
+		"EXAMPLES:",
+		"kubectl logs my-pod | logpipe",
+		"OUTPUT FORMATS:",
+		"github.com/kabooboo/logpipe",
+	}
+
+	for _, expected := range expectedStrings {
+		if !strings.Contains(output, expected) {
+			t.Errorf("Help output missing expected string: %s", expected)
+		}
+	}
+}
+
+func TestPrintVersion(t *testing.T) {
+	// Capture stdout
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	printVersion()
+
+	// Close writer and restore stdout
+	w.Close()
+	os.Stdout = oldStdout
+
+	// Read output
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	output := buf.String()
+
+	// Verify version content
+	expectedStrings := []string{
+		"LogPipe",
+		"Commit:",
+		"Built:",
+		"github.com/kabooboo/logpipe",
+	}
+
+	for _, expected := range expectedStrings {
+		if !strings.Contains(output, expected) {
+			t.Errorf("Version output missing expected string: %s", expected)
+		}
+	}
+}
+
 func BenchmarkPrintPrettyLog(b *testing.B) {
 	// Capture stdout to prevent actual printing during benchmark
 	oldStdout := os.Stdout

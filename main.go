@@ -10,6 +10,13 @@ import (
 	"github.com/fatih/color"
 )
 
+// Version information - set at build time
+var (
+	version = "dev"
+	commit  = "unknown"
+	date    = "unknown"
+)
+
 type LogEntry struct {
 	Timestamp   string      `json:"@timestamp"`
 	Level       string      `json:"log.level"`
@@ -82,6 +89,32 @@ type LogEntry struct {
 }
 
 func main() {
+	// Check for help flags
+	if len(os.Args) > 1 {
+		arg := os.Args[1]
+		if arg == "-h" || arg == "--help" || arg == "help" {
+			printHelp()
+			return
+		}
+		if arg == "-v" || arg == "--version" || arg == "version" {
+			printVersion()
+			return
+		}
+	}
+
+	// Check if stdin has data
+	stat, err := os.Stdin.Stat()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error checking stdin: %v\n", err)
+		os.Exit(1)
+	}
+
+	// If no pipe input and no args, show help
+	if (stat.Mode()&os.ModeCharDevice) != 0 && len(os.Args) == 1 {
+		printHelp()
+		return
+	}
+
 	scanner := bufio.NewScanner(os.Stdin)
 
 	for scanner.Scan() {
@@ -182,4 +215,48 @@ func getStatusColor(status int) *color.Color {
 	default:
 		return color.New(color.FgWhite)
 	}
+}
+
+func printHelp() {
+	fmt.Println("LogPipe - Pretty-print structured JSON logs")
+	fmt.Println()
+	fmt.Println("USAGE:")
+	fmt.Println("  logpipe [OPTIONS]")
+	fmt.Println()
+	fmt.Println("DESCRIPTION:")
+	fmt.Println("  LogPipe reads JSON logs from stdin and displays them in a readable format.")
+	fmt.Println("  It automatically detects HTTP access logs and general application logs.")
+	fmt.Println()
+	fmt.Println("OPTIONS:")
+	fmt.Println("  -h, --help     Show this help message")
+	fmt.Println("  -v, --version  Show version information")
+	fmt.Println()
+	fmt.Println("EXAMPLES:")
+	fmt.Println("  # Kubernetes logs")
+	fmt.Println("  kubectl logs my-pod | logpipe")
+	fmt.Println()
+	fmt.Println("  # Local log files")
+	fmt.Println("  cat app.log | logpipe")
+	fmt.Println()
+	fmt.Println("  # Live log streaming")
+	fmt.Println("  tail -f /var/log/app.log | logpipe")
+	fmt.Println()
+	fmt.Println("  # JSON log example")
+	fmt.Println(`  echo '{"@timestamp":"2024-01-15T14:25:13.458Z","log.level":"info","message":"Server started"}' | logpipe`)
+	fmt.Println()
+	fmt.Println("OUTPUT FORMATS:")
+	fmt.Println("  HTTP Access Logs:")
+	fmt.Println("    14:25:13 [info ] GET  200 /api/users from=192.168.1.100 850ms ua=curl/8.7.1")
+	fmt.Println()
+	fmt.Println("  Application Logs:")
+	fmt.Println("    14:25:13 [error] Database connection failed error=map[code:TIMEOUT]")
+	fmt.Println()
+	fmt.Println("For more information, visit: https://github.com/kabooboo/logpipe")
+}
+
+func printVersion() {
+	fmt.Printf("LogPipe %s\n", version)
+	fmt.Printf("Commit: %s\n", commit)
+	fmt.Printf("Built: %s\n", date)
+	fmt.Println("https://github.com/kabooboo/logpipe")
 }

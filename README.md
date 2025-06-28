@@ -31,7 +31,7 @@ Download the latest binary from the [releases page](https://github.com/kabooboo/
 ```bash
 git clone https://github.com/kabooboo/logpipe.git
 cd logpipe
-go build -o logpipe main.go
+go build .
 ```
 
 ## Usage
@@ -39,6 +39,12 @@ go build -o logpipe main.go
 ### Basic Usage
 
 ```bash
+# Get help
+logpipe --help
+
+# Get version
+logpipe --version
+
 # Pipe JSON logs directly
 echo '{"@timestamp":"2025-06-28T11:50:00.000Z","log.level":"info","message":"Application started"}' | logpipe
 
