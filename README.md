@@ -15,7 +15,7 @@ A command-line tool for pretty-printing structured JSON logs, designed to make l
 ### Using Go Install (Recommended)
 
 ```bash
-go install github.com/YOUR_USERNAME/logpipe@latest
+go install github.com/kabooboo/logpipe@latest
 ```
 
 This will install the `logpipe` binary to your `$GOPATH/bin` directory (usually `~/go/bin`). Make sure this directory is in your `$PATH`.
@@ -24,12 +24,12 @@ This will install the `logpipe` binary to your `$GOPATH/bin` directory (usually 
 
 ### Download from Releases
 
-Download the latest binary from the [releases page](https://github.com/YOUR_USERNAME/logpipe/releases).
+Download the latest binary from the [releases page](https://github.com/kabooboo/logpipe/releases).
 
 ### Build from Source
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/logpipe.git
+git clone https://github.com/kabooboo/logpipe.git
 cd logpipe
 go build -o logpipe main.go
 ```
@@ -175,13 +175,8 @@ $ cat mixed.log | ./logpipe
 
 ## License
 
-This project is dual-licensed under your choice of:
-
-- **MIT License** - see the [LICENSE](LICENSE) file for details
-- **Apache License 2.0** - see the [LICENSE-APACHE](LICENSE-APACHE) file for details
-
-You may use this project under the terms of either license.
+This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
 
 ## Changelog
 
-See [RELEASES](https://github.com/YOUR_USERNAME/logpipe/releases) for version history and changes.
+See [RELEASES](https://github.com/kabooboo/logpipe/releases) for version history and changes.
