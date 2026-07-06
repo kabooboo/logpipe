@@ -86,59 +86,23 @@ func TestRedactFlat(t *testing.T) {
 	}
 }
 
-func TestHeuristicTemplateECS(t *testing.T) {
-	p := newProfile("sig")
-	p.Observe(mustFlatten(t, `{"@timestamp":"t","log.level":"info","message":"m","http":{"request":{"method":"GET"},"response":{"status_code":200}},"url":{"path":"/x"},"event":{"duration":1000000}}`), true)
-	tmpl := p.HeuristicTemplate()
-
-	if tmpl.TimestampPath != "@timestamp" {
-		t.Errorf("timestamp = %q", tmpl.TimestampPath)
-	}
-	if tmpl.LevelPath != "log.level" {
-		t.Errorf("level = %q", tmpl.LevelPath)
-	}
-	if tmpl.MessagePath != "message" {
-		t.Errorf("message = %q", tmpl.MessagePath)
-	}
-	if !hasHighlight(tmpl, "http.request.method") || !hasHighlight(tmpl, "http.response.status_code") {
-		t.Errorf("expected method + status highlights, got %+v", tmpl.Highlights)
-	}
-}
-
-func TestHeuristicTemplateNovelSchema(t *testing.T) {
-	p := newProfile("sig")
-	p.Observe(mustFlatten(t, `{"time":"t","severity":"WARN","msg":"hi","user":"bob"}`), true)
-	tmpl := p.HeuristicTemplate()
-
-	if tmpl.TimestampPath != "time" || tmpl.LevelPath != "severity" || tmpl.MessagePath != "msg" {
-		t.Errorf("dynamic resolution failed: %+v", tmpl)
-	}
-	if !hasHighlight(tmpl, "user") {
-		t.Errorf("expected 'user' highlight, got %+v", tmpl.Highlights)
-	}
-}
-
-func TestHeuristicCacheInvalidates(t *testing.T) {
-	p := newProfile("sig")
-	p.Observe(mustFlatten(t, `{"level":"info"}`), true)
-	first := p.HeuristicTemplate()
-	if p.HeuristicTemplate() != first {
-		t.Error("cache should return same pointer when unchanged")
-	}
-	p.Observe(mustFlatten(t, `{"level":"info","message":"m"}`), true)
-	if p.HeuristicTemplate() == first {
-		t.Error("cache should rebuild after a new field appears")
-	}
-}
-
 func TestRender(t *testing.T) {
 	color.NoColor = true
-	p := newProfile("sig")
 	flat := mustFlatten(t, `{"@timestamp":"2025-06-28T11:50:00.000Z","log.level":"error","message":"boom","http":{"request":{"method":"GET"},"response":{"status_code":500}},"url":{"path":"/api/x"},"event":{"duration":1250000000}}`)
-	p.Observe(flat, true)
+	tmpl := &Template{
+		TimestampPath: "@timestamp",
+		LevelPath:     "log.level",
+		MessagePath:   "message",
+		Highlights: []Highlight{
+			{Path: "http.request.method", Color: "magenta+bold"},
+			{Path: "http.response.status_code", Color: "status", Format: "status"},
+			{Path: "url.path", Color: "green"},
+			{Path: "event.duration", Color: "yellow", Format: "ms-from-ns"},
+		},
+	}
 
 	var sb strings.Builder
-	render(&sb, flat, p.HeuristicTemplate())
+	render(&sb, flat, tmpl)
 	out := sb.String()
 
 	for _, want := range []string{"11:50:00", "erro", "boom", "GET", "500", "/api/x", "1250ms"} {
@@ -250,9 +214,14 @@ func BenchmarkRender(b *testing.B) {
 	var m map[string]interface{}
 	json.Unmarshal([]byte(`{"@timestamp":"2025-06-28T11:50:00.000Z","log.level":"info","message":"access","http":{"request":{"method":"GET"},"response":{"status_code":200}},"url":{"path":"/api/test"},"event":{"duration":1000000}}`), &m)
 	flat := flatten(m)
-	p := newProfile("sig")
-	p.Observe(flat, true)
-	tmpl := p.HeuristicTemplate()
+	tmpl := &Template{
+		TimestampPath: "@timestamp", LevelPath: "log.level", MessagePath: "message",
+		Highlights: []Highlight{
+			{Path: "http.request.method", Color: "magenta+bold"},
+			{Path: "http.response.status_code", Color: "status", Format: "status"},
+			{Path: "url.path", Color: "green"},
+		},
+	}
 	var sb strings.Builder
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

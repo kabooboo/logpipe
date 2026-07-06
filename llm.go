@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -29,16 +31,20 @@ type Store struct {
 	client    *llmClient
 	debug     bool
 	warned    bool
+	cacheFile string
 }
 
-func newStore(client *llmClient, debug bool) *Store {
-	return &Store{
+func newStore(client *llmClient, debug bool, cacheFile string) *Store {
+	s := &Store{
 		templates: make(map[string]*Template),
 		inflight:  make(map[string]bool),
 		reqCh:     make(chan ProfileSnapshot, reqChanBuffer),
 		client:    client,
 		debug:     debug,
+		cacheFile: cacheFile,
 	}
+	s.loadCache()
+	return s
 }
 
 func (s *Store) Get(sig string) *Template {
@@ -47,11 +53,66 @@ func (s *Store) Get(sig string) *Template {
 	return s.templates[sig]
 }
 
+// cachedSignatures returns the signatures already primed from the on-disk cache.
+func (s *Store) cachedSignatures() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	sigs := make([]string, 0, len(s.templates))
+	for sig := range s.templates {
+		sigs = append(sigs, sig)
+	}
+	return sigs
+}
+
 func (s *Store) set(sig string, t *Template) {
 	s.mu.Lock()
 	s.templates[sig] = t
 	s.inflight[sig] = false
+	s.saveCacheLocked()
 	s.mu.Unlock()
+}
+
+// loadCache primes templates from disk; missing/corrupt cache is ignored.
+func (s *Store) loadCache() {
+	if s.cacheFile == "" {
+		return
+	}
+	raw, err := os.ReadFile(s.cacheFile)
+	if err != nil {
+		return
+	}
+	var stored map[string]*Template
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		return
+	}
+	for sig, t := range stored {
+		if t == nil {
+			continue
+		}
+		t.Signature = sig
+		t.source = "cache"
+		s.templates[sig] = t
+	}
+	if s.debug {
+		fmt.Fprintf(stderr, "logpipe: loaded %d cached schema(s) from %s\n", len(stored), s.cacheFile)
+	}
+}
+
+// saveCacheLocked writes all templates to disk. Caller must hold s.mu.
+func (s *Store) saveCacheLocked() {
+	if s.cacheFile == "" {
+		return
+	}
+	raw, err := json.MarshalIndent(s.templates, "", "  ")
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(s.cacheFile), 0o700); err != nil {
+		return
+	}
+	if err := os.WriteFile(s.cacheFile, raw, 0o600); err != nil && s.debug {
+		fmt.Fprintf(stderr, "logpipe: failed to write schema cache: %v\n", err)
+	}
 }
 
 // Enqueue schedules an LLM refinement for a cluster. Non-blocking: drops the
@@ -141,7 +202,6 @@ type chatRequest struct {
 	Model          string         `json:"model"`
 	Messages       []chatMessage  `json:"messages"`
 	ResponseFormat map[string]any `json:"response_format,omitempty"`
-	Temperature    float64        `json:"temperature"`
 }
 
 type chatResponse struct {
@@ -182,7 +242,6 @@ func (c *llmClient) generate(ctx context.Context, snap ProfileSnapshot) (*Templa
 			{Role: "user", Content: describeProfile(snap)},
 		},
 		ResponseFormat: map[string]any{"type": "json_object"},
-		Temperature:    0,
 	}
 	buf, err := json.Marshal(body)
 	if err != nil {
@@ -224,10 +283,22 @@ func (c *llmClient) generate(ctx context.Context, snap ProfileSnapshot) (*Templa
 	}
 
 	var t Template
-	if err := json.Unmarshal([]byte(cr.Choices[0].Message.Content), &t); err != nil {
+	content := extractJSONObject(cr.Choices[0].Message.Content)
+	if err := json.Unmarshal([]byte(content), &t); err != nil {
 		return nil, fmt.Errorf("bad template json: %w", err)
 	}
 	return &t, nil
+}
+
+// extractJSONObject pulls the outermost {...} out of a model reply, tolerating
+// markdown code fences or surrounding prose some models emit despite json_object.
+func extractJSONObject(s string) string {
+	start := strings.IndexByte(s, '{')
+	end := strings.LastIndexByte(s, '}')
+	if start >= 0 && end > start {
+		return s[start : end+1]
+	}
+	return s
 }
 
 // describeProfile renders the observed structure into the user prompt.

@@ -4,11 +4,10 @@ A command-line tool for pretty-printing structured JSON logs, designed to make l
 
 ## Features
 
-- 🎨 **Pretty-printed logs** with syntax highlighting
-- 🧠 **Dynamic format learning** — no fixed schema; LogPipe aggregates the shape of each log format as lines stream in and picks timestamp / level / message / highlight fields automatically
-- 🤖 **Optional LLM refinement** — with `--llm`, an OpenAI-compatible model progressively generates a more precise render template per format
+- 🤖 **LLM-driven formatting** — no built-in schema; an OpenAI-compatible model learns how to render each log format from the lines it sees
+- 🌊 **Raw until ready** — lines print raw until a format's schema arrives, then switch to a colorized layout mid-stream
+- 💾 **Cached schemas** — learned layouts are cached under `$HOME/.cache/logpipe/`, so repeat runs render instantly from the first line
 - 📝 **Works with any JSON logs** — ECS, GCP, Bunyan, or your own shape
-- ✂️ **Smart truncation** of unparseable lines to fit terminal width
 - 🔧 **Kubernetes-friendly** - works seamlessly with `kubectl logs`
 
 ## Installation
@@ -72,23 +71,27 @@ cat app.log | logpipe --no-message "debug.*"
 cat app.log | logpipe --level "error|warn" --no-message "deprecated"
 ```
 
-**Note**: Regex patterns are fully anchored — `--level "info"` matches the level `info` exactly, not `information`. Use alternation (`error|warn`) or wildcards (`.*timeout.*`) for partial matches. Filters resolve the level/message field dynamically per log format.
+**Note**: Regex patterns are fully anchored — `--level "info"` matches the level `info` exactly, not `information`. Use alternation (`error|warn`) or wildcards (`.*timeout.*`) for partial matches. Filters apply once a format's schema is known.
 
-### LLM-refined formatting
+### LLM formatting (default)
+
+LogPipe has **no built-in schema**. An OpenAI-compatible model learns how to render each log format from the lines it observes. It is on by default:
 
 ```bash
-# Refine rendering via an OpenAI-compatible endpoint
 export LLM_API_KEY=sk-...
-cat app.log | logpipe --llm
-
-# Point at any compatible endpoint / model
-export LLM_API_URL=https://my-gateway/v1
-cat app.log | logpipe --llm --llm-model gpt-4o-mini
+export LLM_API_URL=https://my-gateway/v1   # optional; defaults to OpenAI
+export LLM_MODEL=gpt-4o-mini               # optional
+kubectl logs -f my-pod | logpipe
 ```
 
-LogPipe renders immediately using its built-in heuristic and, in the background, asks the model how to best display each observed format — swapping in the refined template for later lines. The stream is never blocked on the network; if the endpoint is unreachable, LogPipe falls back to the heuristic and prints one warning to stderr.
+How it works:
 
-**Privacy**: `--redact` (on by default) masks values whose key looks secret (`password`, `token`, `api_key`, …) before they are printed or sent. With `--redact=false`, sampled field **values** are included in the LLM request — make sure that is acceptable for your data (PII / secrets) and endpoint.
+- Lines print **raw** until a format's schema is ready; then LogPipe switches to a colorized layout and prints `☸ Adapted format …`.
+- Schema generation runs in the background — the stream is never blocked on the network. If the endpoint is unreachable, lines keep flowing raw and one warning is printed to stderr (use `--llm-debug` to see per-request detail).
+- Learned schemas are cached under `$HOME/.cache/logpipe/`, keyed by the logpipe command. **Repeat runs render structured from the first line** and make no LLM call. Disable with `--no-cache`.
+- `--no-llm` turns off the model entirely and passes every line through raw.
+
+**Privacy**: `--redact` (on by default) masks values whose key looks secret (`password`, `token`, `api_key`, …) before they are printed, cached, or sent. Other field **values** are sent to the endpoint so it can choose a layout — make sure that is acceptable for your data (PII / secrets) and endpoint.
 
 ### Kubernetes Logs
 
@@ -134,18 +137,12 @@ This is a very long plain text log line that doesn't parse as JSON and will be t
 
 ## How fields are chosen
 
-LogPipe has **no fixed schema**. For each line it flattens the JSON to dot-paths
-(`http.request.method`), groups logs by their set of top-level keys, and builds a
-render template per group:
-
-- **timestamp**: first of `@timestamp`, `timestamp`, `ts`, `@t`, `time`, `date`
-- **level**: first of `log.level`, `level`, `severity`, `lvl`, `loglevel`
-- **message**: first of `message`, `msg`, `text`, `log.original`
-- **highlights**: well-known fields (`http.request.method`, `http.response.status_code`,
-  `url.path`, `source.ip`, `event.duration`, `user_agent.original`, `error`) plus a few
-  remaining scalar fields
-
-With `--llm`, the model refines these choices from the observed structure and sample values.
+LogPipe has **no built-in schema**. For each line it flattens the JSON to dot-paths
+(`http.request.method`) and groups logs by their set of top-level keys. After a few
+samples of a format, it sends that structure (paths, types, sample values) to the LLM,
+which picks the timestamp / level / message fields and a handful of highlights, plus
+colors and formats (e.g. nanoseconds → `ms`, HTTP status coloring). The resulting layout
+is cached and reused. Formats it hasn't learned yet print raw.
 
 ## Color Coding
 

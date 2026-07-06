@@ -39,11 +39,12 @@ func main() {
 	messageFilter := flag.String("message", "", "PERL regex to filter messages")
 	noLevelFilter := flag.String("no-level", "", "PERL regex to exclude log levels")
 	noMessageFilter := flag.String("no-message", "", "PERL regex to exclude messages")
-	useLLM := flag.Bool("llm", false, "use an OpenAI-compatible LLM to refine log formats")
+	noLLM := flag.Bool("no-llm", false, "disable LLM formatting; pass raw lines through unchanged")
 	llmDebug := flag.Bool("llm-debug", false, "log LLM refinement activity to stderr")
 	llmModel := flag.String("llm-model", envOr("LLM_MODEL", "gpt-4o-mini"), "LLM model name")
 	redact := flag.Bool("redact", true, "mask secret-looking values before sampling/printing/sending")
 	minSamples := flag.Int("llm-min-samples", 5, "lines to observe before the first LLM refinement")
+	noCache := flag.Bool("no-cache", false, "do not read or write the on-disk schema cache")
 	flag.Parse()
 
 	levelRegex := mustCompile(*levelFilter, "level")
@@ -64,13 +65,17 @@ func main() {
 	profiles := newProfiles(*redact)
 
 	var store *Store
-	if *useLLM {
+	if !*noLLM {
 		cfg := llmConfig{
 			baseURL: envOr("LLM_API_URL", "https://api.openai.com/v1"),
 			apiKey:  os.Getenv("LLM_API_KEY"),
 			model:   *llmModel,
 		}
-		store = newStore(newLLMClient(cfg), *llmDebug)
+		cacheFile := ""
+		if !*noCache {
+			cacheFile = cachePath(commandChecksum(os.Args[1:]))
+		}
+		store = newStore(newLLMClient(cfg), *llmDebug, cacheFile)
 		go store.run(context.Background())
 	}
 
@@ -81,6 +86,11 @@ func main() {
 
 	var sb strings.Builder
 	seen := make(map[string]*Template)
+	if store != nil {
+		for _, sig := range store.cachedSignatures() {
+			seen[sig] = store.Get(sig)
+		}
+	}
 	cueColor := color.New(color.FgHiBlack, color.Italic)
 
 	for scanner.Scan() {
@@ -100,9 +110,18 @@ func main() {
 		redactFlat(flat, *redact)
 		sig := signature(flat)
 		profile := profiles.route(sig, flat)
+		maybeRefine(store, profile, *minSamples)
 
-		tmpl := profileTemplate(store, sig, profile)
-		if tmpl.source == "llm" && seen[sig] != tmpl {
+		var tmpl *Template
+		if store != nil {
+			tmpl = store.Get(sig)
+		}
+		if tmpl == nil {
+			fmt.Fprintln(out, line)
+			continue
+		}
+
+		if seen[sig] != tmpl {
 			fmt.Fprintln(out, cueColor.Sprintf("☸ Adapted format · %d fields", len(profile.Fields)))
 		}
 		seen[sig] = tmpl
@@ -114,8 +133,6 @@ func main() {
 		sb.Reset()
 		render(&sb, flat, tmpl)
 		out.WriteString(sb.String())
-
-		maybeRefine(store, profile, *minSamples)
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -125,21 +142,17 @@ func main() {
 	}
 }
 
-// profileTemplate returns the best available template: an LLM-refined one if the
-// worker has produced it, otherwise the deterministic heuristic.
-func profileTemplate(store *Store, sig string, profile *Profile) *Template {
-	if store != nil {
-		if t := store.Get(sig); t != nil {
-			return t
-		}
-	}
-	return profile.HeuristicTemplate()
-}
-
 // maybeRefine enqueues an LLM refinement when enough has been seen, or when new
 // fields have appeared and the cooldown has elapsed.
 func maybeRefine(store *Store, profile *Profile, minSamples int) {
 	if store == nil || profile.Count < minSamples {
+		return
+	}
+	// A cached/existing template already covers this format; anchor the gen
+	// markers to it so we only re-query when genuinely new fields appear.
+	if profile.lastGenCount == 0 && store.Get(profile.Signature) != nil {
+		profile.lastGenPaths = len(profile.Fields)
+		profile.lastGenCount = profile.Count
 		return
 	}
 	firstGen := profile.lastGenCount == 0
@@ -230,8 +243,9 @@ func printHelp() {
 	fmt.Println()
 	fmt.Println("DESCRIPTION:")
 	fmt.Println("  LogPipe reads JSON logs from stdin and displays them in a readable format.")
-	fmt.Println("  It learns the shape of each log format as lines stream in — no fixed schema.")
-	fmt.Println("  With --llm it asks an OpenAI-compatible model to refine the rendering per format.")
+	fmt.Println("  It has NO built-in schema: an OpenAI-compatible LLM learns how to render each")
+	fmt.Println("  log format from the lines it sees. Until a format's schema is ready, lines are")
+	fmt.Println("  printed raw; learned schemas are cached so later runs render instantly.")
 	fmt.Println()
 	fmt.Println("OPTIONS:")
 	fmt.Println("  -h, --help              Show this help message")
@@ -240,10 +254,11 @@ func printHelp() {
 	fmt.Println("  --message REGEX         Include logs matching message regex")
 	fmt.Println("  --no-level REGEX        Exclude logs matching level regex")
 	fmt.Println("  --no-message REGEX      Exclude logs matching message regex")
-	fmt.Println("  --llm                   Refine log formats via an OpenAI-compatible LLM")
+	fmt.Println("  --no-llm                Disable the LLM; pass raw lines through unchanged")
 	fmt.Println("  --llm-debug             Log LLM refinement activity to stderr")
 	fmt.Println("  --llm-model NAME        Model name (default: $LLM_MODEL or gpt-4o-mini)")
 	fmt.Println("  --llm-min-samples N     Lines to observe before first refinement (default: 5)")
+	fmt.Println("  --no-cache              Do not read or write the on-disk schema cache")
 	fmt.Println("  --redact                Mask secret-looking values (default: true)")
 	fmt.Println()
 	fmt.Println("LLM ENVIRONMENT:")
@@ -251,13 +266,14 @@ func printHelp() {
 	fmt.Println("  LLM_API_KEY             API key sent as a Bearer token")
 	fmt.Println("  LLM_MODEL               Default model name")
 	fmt.Println()
-	fmt.Println("  Note: with --llm and --redact=false, log field VALUES are sent to the")
-	fmt.Println("  configured endpoint. Ensure that is acceptable for your data.")
+	fmt.Println("  Schemas are cached under $HOME/.cache/logpipe/ keyed by the logpipe command.")
+	fmt.Println("  Note: unless --redact=false, secret-looking values are masked before being")
+	fmt.Println("  sent; other field VALUES are sent to the endpoint so it can pick a layout.")
 	fmt.Println()
 	fmt.Println("EXAMPLES:")
-	fmt.Println("  kubectl logs my-pod | logpipe")
+	fmt.Println("  kubectl logs -f my-pod | logpipe")
 	fmt.Println("  cat app.log | logpipe --level \"error|warn\"")
-	fmt.Println("  cat app.log | logpipe --llm")
+	fmt.Println("  cat app.log | logpipe --no-llm")
 	fmt.Println()
 	fmt.Println("For more information, visit: https://github.com/kabooboo/logpipe")
 }

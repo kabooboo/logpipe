@@ -33,23 +33,10 @@ type Profile struct {
 
 	lastGenPaths int
 	lastGenCount int
-
-	dirty     bool
-	heuristic *Template
 }
 
 func newProfile(sig string) *Profile {
 	return &Profile{Signature: sig, Fields: make(map[string]*FieldStat)}
-}
-
-// HeuristicTemplate returns the cached deterministic template, rebuilding it
-// only when a new field path has appeared.
-func (p *Profile) HeuristicTemplate() *Template {
-	if p.heuristic == nil || p.dirty {
-		p.heuristic = buildHeuristic(p.Signature, p.Fields)
-		p.dirty = false
-	}
-	return p.heuristic
 }
 
 // Observe folds one flattened record into the profile.
@@ -60,7 +47,6 @@ func (p *Profile) Observe(flat map[string]interface{}, redact bool) {
 		if fs == nil {
 			fs = &FieldStat{Types: make(map[string]int)}
 			p.Fields[path] = fs
-			p.dirty = true
 		}
 		fs.Count++
 		fs.Types[jsonType(v)]++

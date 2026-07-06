@@ -55,6 +55,38 @@ func TestLLMGenerate(t *testing.T) {
 	}
 }
 
+func TestExtractJSONObject(t *testing.T) {
+	cases := map[string]string{
+		`{"a":1}`:                    `{"a":1}`,
+		"```json\n{\"a\":1}\n```":     `{"a":1}`,
+		"here you go:\n{\"a\":1}\nEOF": `{"a":1}`,
+		"no json here":               "no json here",
+	}
+	for in, want := range cases {
+		if got := extractJSONObject(in); got != want {
+			t.Errorf("extractJSONObject(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestLLMGenerateFenced(t *testing.T) {
+	fenced := "```json\n{\"timestamp_path\":\"time\",\"level_path\":\"severity\",\"message_path\":\"msg\",\"highlights\":[]}\n```"
+	srv := mockChatServer(t, fenced, nil)
+	defer srv.Close()
+
+	client := newLLMClient(llmConfig{baseURL: srv.URL, model: "test"})
+	snap := ProfileSnapshot{Signature: "sig", Count: 5, Fields: map[string]FieldStat{
+		"time": {}, "severity": {}, "msg": {},
+	}}
+	tmpl, err := client.generate(context.Background(), snap)
+	if err != nil {
+		t.Fatalf("generate on fenced JSON: %v", err)
+	}
+	if tmpl.LevelPath != "severity" {
+		t.Errorf("fenced template not parsed: %+v", tmpl)
+	}
+}
+
 func TestLLMRequestRedaction(t *testing.T) {
 	var captured string
 	srv := mockChatServer(t, `{"timestamp_path":"","level_path":"","message_path":"","highlights":[]}`, &captured)
@@ -95,7 +127,7 @@ func TestLLMValidateRejectsUnknownPaths(t *testing.T) {
 }
 
 func TestStoreEnqueueDedupe(t *testing.T) {
-	store := newStore(nil, false)
+	store := newStore(nil, false, "")
 	snap := ProfileSnapshot{Signature: "sig"}
 	if !store.Enqueue(snap) {
 		t.Fatal("first enqueue should succeed")
