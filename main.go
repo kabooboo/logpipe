@@ -40,7 +40,7 @@ func main() {
 	noLevelFilter := flag.String("no-level", "", "PERL regex to exclude log levels")
 	noMessageFilter := flag.String("no-message", "", "PERL regex to exclude messages")
 	useLLM := flag.Bool("llm", false, "use an OpenAI-compatible LLM to refine log formats")
-	llmModel := flag.String("llm-model", envOr("OPENAI_MODEL", "gpt-4o-mini"), "LLM model name")
+	llmModel := flag.String("llm-model", envOr("LLM_MODEL", "gpt-4o-mini"), "LLM model name")
 	redact := flag.Bool("redact", true, "mask secret-looking values before sampling/printing/sending")
 	minSamples := flag.Int("llm-min-samples", 5, "lines to observe before the first LLM refinement")
 	flag.Parse()
@@ -65,8 +65,8 @@ func main() {
 	var store *Store
 	if *useLLM {
 		cfg := llmConfig{
-			baseURL: envOr("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-			apiKey:  os.Getenv("OPENAI_API_KEY"),
+			baseURL: envOr("LLM_API_URL", "https://api.openai.com/v1"),
+			apiKey:  os.Getenv("LLM_API_KEY"),
 			model:   *llmModel,
 		}
 		store = newStore(newLLMClient(cfg))
@@ -234,14 +234,14 @@ func printHelp() {
 	fmt.Println("  --no-level REGEX        Exclude logs matching level regex")
 	fmt.Println("  --no-message REGEX      Exclude logs matching message regex")
 	fmt.Println("  --llm                   Refine log formats via an OpenAI-compatible LLM")
-	fmt.Println("  --llm-model NAME        Model name (default: $OPENAI_MODEL or gpt-4o-mini)")
+	fmt.Println("  --llm-model NAME        Model name (default: $LLM_MODEL or gpt-4o-mini)")
 	fmt.Println("  --llm-min-samples N     Lines to observe before first refinement (default: 5)")
 	fmt.Println("  --redact                Mask secret-looking values (default: true)")
 	fmt.Println()
 	fmt.Println("LLM ENVIRONMENT:")
-	fmt.Println("  OPENAI_BASE_URL         API base (default: https://api.openai.com/v1)")
-	fmt.Println("  OPENAI_API_KEY          API key sent as a Bearer token")
-	fmt.Println("  OPENAI_MODEL            Default model name")
+	fmt.Println("  LLM_API_URL             API base (default: https://api.openai.com/v1)")
+	fmt.Println("  LLM_API_KEY             API key sent as a Bearer token")
+	fmt.Println("  LLM_MODEL               Default model name")
 	fmt.Println()
 	fmt.Println("  Note: with --llm and --redact=false, log field VALUES are sent to the")
 	fmt.Println("  configured endpoint. Ensure that is acceptable for your data.")

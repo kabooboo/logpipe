@@ -78,11 +78,11 @@ cat app.log | logpipe --level "error|warn" --no-message "deprecated"
 
 ```bash
 # Refine rendering via an OpenAI-compatible endpoint
-export OPENAI_API_KEY=sk-...
+export LLM_API_KEY=sk-...
 cat app.log | logpipe --llm
 
 # Point at any compatible endpoint / model
-export OPENAI_BASE_URL=https://my-gateway/v1
+export LLM_API_URL=https://my-gateway/v1
 cat app.log | logpipe --llm --llm-model gpt-4o-mini
 ```
 
