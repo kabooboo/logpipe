@@ -40,6 +40,7 @@ func main() {
 	noLevelFilter := flag.String("no-level", "", "PERL regex to exclude log levels")
 	noMessageFilter := flag.String("no-message", "", "PERL regex to exclude messages")
 	useLLM := flag.Bool("llm", false, "use an OpenAI-compatible LLM to refine log formats")
+	llmDebug := flag.Bool("llm-debug", false, "log LLM refinement activity to stderr")
 	llmModel := flag.String("llm-model", envOr("LLM_MODEL", "gpt-4o-mini"), "LLM model name")
 	redact := flag.Bool("redact", true, "mask secret-looking values before sampling/printing/sending")
 	minSamples := flag.Int("llm-min-samples", 5, "lines to observe before the first LLM refinement")
@@ -69,7 +70,7 @@ func main() {
 			apiKey:  os.Getenv("LLM_API_KEY"),
 			model:   *llmModel,
 		}
-		store = newStore(newLLMClient(cfg))
+		store = newStore(newLLMClient(cfg), *llmDebug)
 		go store.run(context.Background())
 	}
 
@@ -240,6 +241,7 @@ func printHelp() {
 	fmt.Println("  --no-level REGEX        Exclude logs matching level regex")
 	fmt.Println("  --no-message REGEX      Exclude logs matching message regex")
 	fmt.Println("  --llm                   Refine log formats via an OpenAI-compatible LLM")
+	fmt.Println("  --llm-debug             Log LLM refinement activity to stderr")
 	fmt.Println("  --llm-model NAME        Model name (default: $LLM_MODEL or gpt-4o-mini)")
 	fmt.Println("  --llm-min-samples N     Lines to observe before first refinement (default: 5)")
 	fmt.Println("  --redact                Mask secret-looking values (default: true)")

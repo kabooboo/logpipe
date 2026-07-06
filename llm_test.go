@@ -95,7 +95,7 @@ func TestLLMValidateRejectsUnknownPaths(t *testing.T) {
 }
 
 func TestStoreEnqueueDedupe(t *testing.T) {
-	store := newStore(nil)
+	store := newStore(nil, false)
 	snap := ProfileSnapshot{Signature: "sig"}
 	if !store.Enqueue(snap) {
 		t.Fatal("first enqueue should succeed")

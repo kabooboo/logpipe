@@ -27,15 +27,17 @@ type Store struct {
 	inflight  map[string]bool
 	reqCh     chan ProfileSnapshot
 	client    *llmClient
+	debug     bool
 	warned    bool
 }
 
-func newStore(client *llmClient) *Store {
+func newStore(client *llmClient, debug bool) *Store {
 	return &Store{
 		templates: make(map[string]*Template),
 		inflight:  make(map[string]bool),
 		reqCh:     make(chan ProfileSnapshot, reqChanBuffer),
 		client:    client,
+		debug:     debug,
 	}
 }
 
@@ -72,15 +74,32 @@ func (s *Store) Enqueue(snap ProfileSnapshot) bool {
 
 func (s *Store) run(ctx context.Context) {
 	for snap := range s.reqCh {
+		if s.debug {
+			fmt.Fprintf(stderr, "logpipe: LLM refine requested [%s] after %d samples\n", snap.Signature, snap.Count)
+		}
 		t, err := s.client.generate(ctx, snap)
-		if err != nil || t == nil || !t.validate(snap) {
-			if err != nil {
-				s.warnOnce(fmt.Sprintf("logpipe: LLM schema generation failed: %v (using heuristic)\n", err))
+		var reason string
+		switch {
+		case err != nil:
+			reason = err.Error()
+		case t == nil:
+			reason = "empty response"
+		case !t.validate(snap):
+			reason = "template referenced unknown field paths"
+		}
+		if reason != "" {
+			if s.debug {
+				fmt.Fprintf(stderr, "logpipe: LLM refine rejected [%s]: %s\n", snap.Signature, reason)
+			} else {
+				s.warnOnce(fmt.Sprintf("logpipe: LLM schema generation failed: %s (using heuristic)\n", reason))
 			}
 			s.mu.Lock()
 			s.inflight[snap.Signature] = false
 			s.mu.Unlock()
 			continue
+		}
+		if s.debug {
+			fmt.Fprintf(stderr, "logpipe: LLM refine applied [%s] (%d highlights)\n", snap.Signature, len(t.Highlights))
 		}
 		t.Signature = snap.Signature
 		t.source = "llm"
