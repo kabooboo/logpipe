@@ -10,26 +10,26 @@ all: build
 
 # Build for current platform
 build:
-	go build -ldflags "$(LDFLAGS)" -o logpipe main.go
+	go build -ldflags "$(LDFLAGS)" -o logpipe .
 
 # Build for all platforms
 build-all: clean
 	mkdir -p dist
 	
 	# Linux AMD64
-	GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o dist/logpipe-linux-amd64 main.go
-	
+	GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o dist/logpipe-linux-amd64 .
+
 	# Linux ARM64
-	GOOS=linux GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o dist/logpipe-linux-arm64 main.go
-	
+	GOOS=linux GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o dist/logpipe-linux-arm64 .
+
 	# macOS AMD64
-	GOOS=darwin GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o dist/logpipe-darwin-amd64 main.go
-	
+	GOOS=darwin GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o dist/logpipe-darwin-amd64 .
+
 	# macOS ARM64 (Apple Silicon)
-	GOOS=darwin GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o dist/logpipe-darwin-arm64 main.go
-	
+	GOOS=darwin GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o dist/logpipe-darwin-arm64 .
+
 	# Windows AMD64
-	GOOS=windows GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o dist/logpipe-windows-amd64.exe main.go
+	GOOS=windows GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o dist/logpipe-windows-amd64.exe .
 
 # Generate checksums
 checksums:
