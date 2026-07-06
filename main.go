@@ -2,13 +2,14 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/fatih/color"
 )
@@ -20,79 +21,9 @@ var (
 	date    = "unknown"
 )
 
-type LogEntry struct {
-	Timestamp   string      `json:"@timestamp"`
-	Level       string      `json:"log.level"`
-	Message     string      `json:"message"`
-	Category    string      `json:"category"`
-	Error       interface{} `json:"error"`
-	Destination struct {
-		Domain string `json:"domain"`
-	} `json:"destination"`
-	Event struct {
-		Duration int64 `json:"duration"`
-	} `json:"event"`
-	HTTP struct {
-		Request struct {
-			Body struct {
-				Bytes int `json:"bytes"`
-			} `json:"body"`
-			ID     string `json:"id"`
-			Method string `json:"method"`
-			Time   string `json:"time"`
-		} `json:"request"`
-		Response struct {
-			Body struct {
-				Bytes int `json:"bytes"`
-			} `json:"body"`
-			MimeType   string `json:"mime_type"`
-			StatusCode int    `json:"status_code"`
-		} `json:"response"`
-		Version string `json:"version"`
-	} `json:"http"`
-	Log struct {
-		Logger   string `json:"logger"`
-		Original string `json:"original"`
-		Origin   struct {
-			File struct {
-				Line int    `json:"line"`
-				Name string `json:"name"`
-			} `json:"file"`
-			Function string `json:"function"`
-		} `json:"origin"`
-	} `json:"log"`
-	Process struct {
-		Name   string `json:"name"`
-		PID    int    `json:"pid"`
-		Thread struct {
-			ID   int64  `json:"id"`
-			Name string `json:"name"`
-		} `json:"thread"`
-	} `json:"process"`
-	Service struct {
-		Version string `json:"version"`
-	} `json:"service"`
-	Source struct {
-		IP string `json:"ip"`
-	} `json:"source"`
-	Span  interface{} `json:"span"`
-	Trace interface{} `json:"trace"`
-	URL   struct {
-		Domain       string `json:"domain"`
-		Path         string `json:"path"`
-		PathTemplate string `json:"path_template"`
-		Port         int    `json:"port"`
-		Query        string `json:"query"`
-		Scheme       string `json:"scheme"`
-	} `json:"url"`
-	UserAgent struct {
-		Original string `json:"original"`
-	} `json:"user_agent"`
-	Version string `json:"version"`
-}
+var stderr io.Writer = os.Stderr
 
 func main() {
-	// Check for help flags before parsing
 	for _, arg := range os.Args[1:] {
 		if arg == "-h" || arg == "--help" || arg == "help" {
 			printHelp()
@@ -104,156 +35,165 @@ func main() {
 		}
 	}
 
-	var levelFilter = flag.String("level", "", "PERL regex to filter log levels")
-	var messageFilter = flag.String("message", "", "PERL regex to filter messages")
-	var noLevelFilter = flag.String("no-level", "", "PERL regex to exclude log levels")
-	var noMessageFilter = flag.String("no-message", "", "PERL regex to exclude messages")
+	levelFilter := flag.String("level", "", "PERL regex to filter log levels")
+	messageFilter := flag.String("message", "", "PERL regex to filter messages")
+	noLevelFilter := flag.String("no-level", "", "PERL regex to exclude log levels")
+	noMessageFilter := flag.String("no-message", "", "PERL regex to exclude messages")
+	useLLM := flag.Bool("llm", false, "use an OpenAI-compatible LLM to refine log formats")
+	llmModel := flag.String("llm-model", envOr("OPENAI_MODEL", "gpt-4o-mini"), "LLM model name")
+	redact := flag.Bool("redact", true, "mask secret-looking values before sampling/printing/sending")
+	minSamples := flag.Int("llm-min-samples", 5, "lines to observe before the first LLM refinement")
 	flag.Parse()
 
-	// Compile regex patterns if provided
-	var levelRegex, messageRegex, noLevelRegex, noMessageRegex *regexp.Regexp
-	var err error
-	if *levelFilter != "" {
-		levelRegex, err = regexp.Compile(*levelFilter)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Invalid level regex: %v\n", err)
-			os.Exit(1)
-		}
-	}
-	if *messageFilter != "" {
-		messageRegex, err = regexp.Compile(*messageFilter)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Invalid message regex: %v\n", err)
-			os.Exit(1)
-		}
-	}
-	if *noLevelFilter != "" {
-		noLevelRegex, err = regexp.Compile(*noLevelFilter)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Invalid no-level regex: %v\n", err)
-			os.Exit(1)
-		}
-	}
-	if *noMessageFilter != "" {
-		noMessageRegex, err = regexp.Compile(*noMessageFilter)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Invalid no-message regex: %v\n", err)
-			os.Exit(1)
-		}
-	}
+	levelRegex := mustCompile(*levelFilter, "level")
+	messageRegex := mustCompile(*messageFilter, "message")
+	noLevelRegex := mustCompile(*noLevelFilter, "no-level")
+	noMessageRegex := mustCompile(*noMessageFilter, "no-message")
 
-	// Check if stdin has data
 	stat, err := os.Stdin.Stat()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error checking stdin: %v\n", err)
+		fmt.Fprintf(stderr, "Error checking stdin: %v\n", err)
 		os.Exit(1)
 	}
-
-	// If no pipe input and no args, show help
 	if (stat.Mode()&os.ModeCharDevice) != 0 && len(os.Args) == 1 {
 		printHelp()
 		return
 	}
 
+	profiles := newProfiles(*redact)
+
+	var store *Store
+	if *useLLM {
+		cfg := llmConfig{
+			baseURL: envOr("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+			apiKey:  os.Getenv("OPENAI_API_KEY"),
+			model:   *llmModel,
+		}
+		store = newStore(newLLMClient(cfg))
+		go store.run(context.Background())
+	}
+
 	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	out := bufio.NewWriter(os.Stdout)
+	defer out.Flush()
+
+	var sb strings.Builder
 
 	for scanner.Scan() {
 		line := scanner.Text()
 
-		var logEntry LogEntry
-		if err := json.Unmarshal([]byte(line), &logEntry); err != nil {
-			// If not valid JSON, print the line truncated to fit terminal
+		var raw map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &raw); err != nil {
 			if len(line) > 120 {
-				fmt.Printf("%s...\n", line[:120])
+				fmt.Fprintf(out, "%s...\n", line[:120])
 			} else {
-				fmt.Println(line)
+				fmt.Fprintln(out, line)
 			}
 			continue
 		}
 
-		// Apply filters
-		if levelRegex != nil && !levelRegex.MatchString("^"+logEntry.Level+"$") {
-			continue
-		}
-		if messageRegex != nil && !messageRegex.MatchString("^"+logEntry.Message+"$") {
-			continue
-		}
-		if noLevelRegex != nil && noLevelRegex.MatchString("^"+logEntry.Level+"$") {
-			continue
-		}
-		if noMessageRegex != nil && noMessageRegex.MatchString("^"+logEntry.Message+"$") {
+		flat := flatten(raw)
+		redactFlat(flat, *redact)
+		sig := signature(flat)
+		profile := profiles.route(sig, flat)
+
+		tmpl := profileTemplate(store, sig, profile)
+
+		if !passesFilters(flat, tmpl, levelRegex, messageRegex, noLevelRegex, noMessageRegex) {
 			continue
 		}
 
-		printPrettyLog(logEntry)
+		sb.Reset()
+		render(&sb, flat, tmpl)
+		out.WriteString(sb.String())
+
+		maybeRefine(store, profile, *minSamples)
 	}
 
 	if err := scanner.Err(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading from stdin: %v\n", err)
+		out.Flush()
+		fmt.Fprintf(stderr, "Error reading from stdin: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func printPrettyLog(log LogEntry) {
-	// Parse timestamp
-	timestamp, err := time.Parse(time.RFC3339, log.Timestamp)
+// profileTemplate returns the best available template: an LLM-refined one if the
+// worker has produced it, otherwise the deterministic heuristic.
+func profileTemplate(store *Store, sig string, profile *Profile) *Template {
+	if store != nil {
+		if t := store.Get(sig); t != nil {
+			return t
+		}
+	}
+	return profile.HeuristicTemplate()
+}
+
+// maybeRefine enqueues an LLM refinement when enough has been seen, or when new
+// fields have appeared and the cooldown has elapsed.
+func maybeRefine(store *Store, profile *Profile, minSamples int) {
+	if store == nil || profile.Count < minSamples {
+		return
+	}
+	firstGen := profile.lastGenCount == 0
+	newFields := len(profile.Fields) > profile.lastGenPaths
+	cooled := profile.Count-profile.lastGenCount >= refineCooldown
+	if !firstGen && !(newFields && cooled) {
+		return
+	}
+	if store.Enqueue(profile.Snapshot()) {
+		profile.lastGenPaths = len(profile.Fields)
+		profile.lastGenCount = profile.Count
+	}
+}
+
+func passesFilters(flat map[string]interface{}, tmpl *Template, level, message, noLevel, noMessage *regexp.Regexp) bool {
+	levelVal := resolveString(flat, tmpl.LevelPath)
+	messageVal := resolveString(flat, tmpl.MessagePath)
+	if level != nil && !level.MatchString(levelVal) {
+		return false
+	}
+	if message != nil && !message.MatchString(messageVal) {
+		return false
+	}
+	if noLevel != nil && noLevel.MatchString(levelVal) {
+		return false
+	}
+	if noMessage != nil && noMessage.MatchString(messageVal) {
+		return false
+	}
+	return true
+}
+
+// mustCompile compiles an anchored filter pattern, exiting on error.
+func mustCompile(pattern, name string) *regexp.Regexp {
+	if pattern == "" {
+		return nil
+	}
+	re, err := regexp.Compile("^(?:" + pattern + ")$")
 	if err != nil {
-		timestamp = time.Now()
+		fmt.Fprintf(stderr, "Invalid %s regex: %v\n", name, err)
+		os.Exit(1)
 	}
+	return re
+}
 
-	// Color setup
-	timestampColor := color.New(color.FgCyan)
-	levelColor := getLevelColor(log.Level)
-	methodColor := color.New(color.FgMagenta, color.Bold)
-	statusColor := getStatusColor(log.HTTP.Response.StatusCode)
-	durationColor := color.New(color.FgYellow)
-	pathColor := color.New(color.FgGreen)
-	messageColor := color.New(color.FgWhite)
-
-	// Check if this is an HTTP access log
-	if log.Category == "http" && log.HTTP.Request.Method != "" {
-		// Format HTTP access log
-		userAgent := log.UserAgent.Original
-		if len(userAgent) > 50 {
-			userAgent = userAgent[:50]
-		}
-		fmt.Printf("%s [%s] %s %s %s %s %s %s\n",
-			timestampColor.Sprintf(timestamp.Format("15:04:05.000")),
-			levelColor.Sprintf("%-4s", log.Level[:min(4, len(log.Level))]),
-			methodColor.Sprintf("%-4s", log.HTTP.Request.Method),
-			statusColor.Sprintf("%d", log.HTTP.Response.StatusCode),
-			pathColor.Sprintf("%s", log.URL.Path),
-			durationColor.Sprintf("%dms", log.Event.Duration/1000000), // Convert to milliseconds
-			color.New(color.FgBlue).Sprintf("ua=%s", userAgent),
-			messageColor.Sprintf("%s", log.Message),
-		)
-	} else {
-		// Format general log entry
-		fmt.Printf("%s [%s] %s",
-			timestampColor.Sprintf(timestamp.Format("15:04:05.000")),
-			levelColor.Sprintf("%-4s", log.Level[:min(4, len(log.Level))]),
-			messageColor.Sprintf("%s", log.Message),
-		)
-
-		// Add error information if present
-		if log.Error != nil {
-			errorColor := color.New(color.FgRed, color.Bold)
-			fmt.Printf(" %s", errorColor.Sprintf("error=%v", log.Error))
-		}
-
-		fmt.Println()
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
 	}
+	return fallback
 }
 
 func getLevelColor(level string) *color.Color {
 	switch strings.ToLower(strings.TrimSpace(level)) {
-	case "error":
+	case "error", "err", "fatal", "critical":
 		return color.New(color.FgRed, color.Bold)
 	case "warn", "warning":
 		return color.New(color.FgYellow, color.Bold)
 	case "info":
 		return color.New(color.FgBlue)
-	case "debug":
+	case "debug", "trace":
 		return color.New(color.FgWhite)
 	default:
 		return color.New(color.FgWhite)
@@ -283,7 +223,8 @@ func printHelp() {
 	fmt.Println()
 	fmt.Println("DESCRIPTION:")
 	fmt.Println("  LogPipe reads JSON logs from stdin and displays them in a readable format.")
-	fmt.Println("  It automatically detects HTTP access logs and general application logs.")
+	fmt.Println("  It learns the shape of each log format as lines stream in — no fixed schema.")
+	fmt.Println("  With --llm it asks an OpenAI-compatible model to refine the rendering per format.")
 	fmt.Println()
 	fmt.Println("OPTIONS:")
 	fmt.Println("  -h, --help              Show this help message")
@@ -292,38 +233,23 @@ func printHelp() {
 	fmt.Println("  --message REGEX         Include logs matching message regex")
 	fmt.Println("  --no-level REGEX        Exclude logs matching level regex")
 	fmt.Println("  --no-message REGEX      Exclude logs matching message regex")
+	fmt.Println("  --llm                   Refine log formats via an OpenAI-compatible LLM")
+	fmt.Println("  --llm-model NAME        Model name (default: $OPENAI_MODEL or gpt-4o-mini)")
+	fmt.Println("  --llm-min-samples N     Lines to observe before first refinement (default: 5)")
+	fmt.Println("  --redact                Mask secret-looking values (default: true)")
+	fmt.Println()
+	fmt.Println("LLM ENVIRONMENT:")
+	fmt.Println("  OPENAI_BASE_URL         API base (default: https://api.openai.com/v1)")
+	fmt.Println("  OPENAI_API_KEY          API key sent as a Bearer token")
+	fmt.Println("  OPENAI_MODEL            Default model name")
+	fmt.Println()
+	fmt.Println("  Note: with --llm and --redact=false, log field VALUES are sent to the")
+	fmt.Println("  configured endpoint. Ensure that is acceptable for your data.")
 	fmt.Println()
 	fmt.Println("EXAMPLES:")
-	fmt.Println("  # Kubernetes logs")
 	fmt.Println("  kubectl logs my-pod | logpipe")
-	fmt.Println()
-	fmt.Println("  # Local log files")
-	fmt.Println("  cat app.log | logpipe")
-	fmt.Println()
-	fmt.Println("  # Live log streaming")
-	fmt.Println("  tail -f /var/log/app.log | logpipe")
-	fmt.Println()
-	fmt.Println("  # Filter by log level")
 	fmt.Println("  cat app.log | logpipe --level \"error|warn\"")
-	fmt.Println()
-	fmt.Println("  # Filter by message content")
-	fmt.Println("  cat app.log | logpipe --message \"database.*timeout\"")
-	fmt.Println()
-	fmt.Println("  # Exclude info logs")
-	fmt.Println("  cat app.log | logpipe --no-level \"info\"")
-	fmt.Println()
-	fmt.Println("  # Exclude debug messages")
-	fmt.Println("  cat app.log | logpipe --no-message \"debug.*\"")
-	fmt.Println()
-	fmt.Println("  # JSON log example")
-	fmt.Println(`  echo '{"@timestamp":"2024-01-15T14:25:13.458Z","log.level":"info","message":"Server started"}' | logpipe`)
-	fmt.Println()
-	fmt.Println("OUTPUT FORMATS:")
-	fmt.Println("  HTTP Access Logs:")
-	fmt.Println("    14:25:13 [info ] GET  200 /api/users from=192.168.1.100 850ms ua=curl/8.7.1")
-	fmt.Println()
-	fmt.Println("  Application Logs:")
-	fmt.Println("    14:25:13 [error] Database connection failed error=map[code:TIMEOUT]")
+	fmt.Println("  cat app.log | logpipe --llm")
 	fmt.Println()
 	fmt.Println("For more information, visit: https://github.com/kabooboo/logpipe")
 }

@@ -5,8 +5,9 @@ A command-line tool for pretty-printing structured JSON logs, designed to make l
 ## Features
 
 - 🎨 **Pretty-printed logs** with syntax highlighting
-- 🌐 **HTTP access log formatting** with method, status, path, source IP, duration, and user agent
-- 📝 **General log support** for application logs with messages and error details
+- 🧠 **Dynamic format learning** — no fixed schema; LogPipe aggregates the shape of each log format as lines stream in and picks timestamp / level / message / highlight fields automatically
+- 🤖 **Optional LLM refinement** — with `--llm`, an OpenAI-compatible model progressively generates a more precise render template per format
+- 📝 **Works with any JSON logs** — ECS, GCP, Bunyan, or your own shape
 - ✂️ **Smart truncation** of unparseable lines to fit terminal width
 - 🔧 **Kubernetes-friendly** - works seamlessly with `kubectl logs`
 
@@ -71,7 +72,23 @@ cat app.log | logpipe --no-message "debug.*"
 cat app.log | logpipe --level "error|warn" --no-message "deprecated"
 ```
 
-**Note**: All regex patterns are automatically anchored (^ and $ are implicit).
+**Note**: Regex patterns are fully anchored — `--level "info"` matches the level `info` exactly, not `information`. Use alternation (`error|warn`) or wildcards (`.*timeout.*`) for partial matches. Filters resolve the level/message field dynamically per log format.
+
+### LLM-refined formatting
+
+```bash
+# Refine rendering via an OpenAI-compatible endpoint
+export OPENAI_API_KEY=sk-...
+cat app.log | logpipe --llm
+
+# Point at any compatible endpoint / model
+export OPENAI_BASE_URL=https://my-gateway/v1
+cat app.log | logpipe --llm --llm-model gpt-4o-mini
+```
+
+LogPipe renders immediately using its built-in heuristic and, in the background, asks the model how to best display each observed format — swapping in the refined template for later lines. The stream is never blocked on the network; if the endpoint is unreachable, LogPipe falls back to the heuristic and prints one warning to stderr.
+
+**Privacy**: `--redact` (on by default) masks values whose key looks secret (`password`, `token`, `api_key`, …) before they are printed or sent. With `--redact=false`, sampled field **values** are included in the LLM request — make sure that is acceptable for your data (PII / secrets) and endpoint.
 
 ### Kubernetes Logs
 
@@ -115,43 +132,20 @@ Non-JSON lines are truncated to fit terminal width:
 This is a very long plain text log line that doesn't parse as JSON and will be truncated to fit...
 ```
 
-## Supported Log Fields
+## How fields are chosen
 
-LogPipe understands the following JSON log structure:
+LogPipe has **no fixed schema**. For each line it flattens the JSON to dot-paths
+(`http.request.method`), groups logs by their set of top-level keys, and builds a
+render template per group:
 
-```json
-{
-  "@timestamp": "2025-06-28T11:50:00.000Z",
-  "log.level": "info",
-  "message": "Request processed",
-  "category": "http",
-  "error": {
-    "code": "ERROR_CODE",
-    "message": "Error description"
-  },
-  "http": {
-    "request": {
-      "method": "GET",
-      "id": "req-123"
-    },
-    "response": {
-      "status_code": 200
-    }
-  },
-  "url": {
-    "path": "/api/endpoint"
-  },
-  "source": {
-    "ip": "192.168.1.100"
-  },
-  "user_agent": {
-    "original": "Mozilla/5.0 ..."
-  },
-  "event": {
-    "duration": 1250000
-  }
-}
-```
+- **timestamp**: first of `@timestamp`, `timestamp`, `ts`, `@t`, `time`, `date`
+- **level**: first of `log.level`, `level`, `severity`, `lvl`, `loglevel`
+- **message**: first of `message`, `msg`, `text`, `log.original`
+- **highlights**: well-known fields (`http.request.method`, `http.response.status_code`,
+  `url.path`, `source.ip`, `event.duration`, `user_agent.original`, `error`) plus a few
+  remaining scalar fields
+
+With `--llm`, the model refines these choices from the observed structure and sample values.
 
 ## Color Coding
 
