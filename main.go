@@ -79,6 +79,8 @@ func main() {
 	defer out.Flush()
 
 	var sb strings.Builder
+	seen := make(map[string]*Template)
+	cueColor := color.New(color.FgHiBlack, color.Italic)
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -99,6 +101,10 @@ func main() {
 		profile := profiles.route(sig, flat)
 
 		tmpl := profileTemplate(store, sig, profile)
+		if tmpl.source == "llm" && seen[sig] != tmpl {
+			fmt.Fprintln(out, cueColor.Sprintf("☸ Adapted format · %d fields", len(profile.Fields)))
+		}
+		seen[sig] = tmpl
 
 		if !passesFilters(flat, tmpl, levelRegex, messageRegex, noLevelRegex, noMessageRegex) {
 			continue
